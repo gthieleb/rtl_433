@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#include "mqtt_pub.h"
 #include "data.h"
 
 typedef void* (*array_elementwise_import_fn)(void*);
@@ -113,6 +114,12 @@ static void print_json_string(data_printer_context_t *printer_ctx, const char *d
 static void print_json_double(data_printer_context_t *printer_ctx, double data, char *format, FILE *file);
 static void print_json_int(data_printer_context_t *printer_ctx, int data, char *format, FILE *file);
 
+static void print_mqtt_data(data_printer_context_t *printer_ctx, data_t *data, char *format, FILE *file);
+static void print_mqtt_array(data_printer_context_t *printer_ctx, data_array_t *data, char *format, FILE *file);
+static void print_mqtt_string(data_printer_context_t *printer_ctx, const char *data, char *format, FILE *file);
+static void print_mqtt_double(data_printer_context_t *printer_ctx, double data, char *format, FILE *file);
+static void print_mqtt_int(data_printer_context_t *printer_ctx, int data, char *format, FILE *file);
+
 static void print_kv_data(data_printer_context_t *printer_ctx, data_t *data, char *format, FILE *file);
 static void print_kv_string(data_printer_context_t *printer_ctx, const char *data, char *format, FILE *file);
 static void print_kv_double(data_printer_context_t *printer_ctx, double data, char *format, FILE *file);
@@ -133,6 +140,14 @@ data_printer_t data_json_printer = {
 	.print_string = print_json_string,
 	.print_double = print_json_double,
 	.print_int    = print_json_int
+};
+
+data_printer_t data_mqtt_printer = {
+	.print_data   = print_mqtt_data,
+	.print_array  = print_mqtt_array,
+	.print_string = print_mqtt_string,
+	.print_double = print_mqtt_double,
+	.print_int    = print_mqtt_int
 };
 
 data_printer_t data_kv_printer = {
@@ -400,6 +415,124 @@ static void print_json_double(data_printer_context_t *printer_ctx, double data, 
 static void print_json_int(data_printer_context_t *printer_ctx, int data, char *format, FILE *file)
 {
 	fprintf(file, "%d", data);
+}
+
+/* MQTT printer */
+static void print_mqtt_array(data_printer_context_t *printer_ctx, data_array_t *array, char *format, FILE *file)
+{
+    mqtt_pub_t *mqtt = printer_ctx->aux;
+    char *orig = mqtt->topic + strlen(mqtt->topic); // save current topic
+
+    int element_size = dmt[array->type].array_element_size;
+    char buffer[element_size];
+
+    for (int c = 0; c < array->num_values; ++c) {
+	    sprintf(orig, "/%d", c);
+        if (!dmt[array->type].array_is_boxed) {
+            memcpy(buffer, (void **)((char *)array->values + element_size * c), element_size);
+            print_value(printer_ctx, file, array->type, buffer, format);
+        } else {
+            print_value(printer_ctx, file, array->type, *(void **)((char *)array->values + element_size * c), format);
+        }
+	}
+    *orig = '\0'; // restore topic
+}
+
+static char *append_topic(char *topic, data_t *data)
+{
+	if (data->type == DATA_STRING) {
+		*topic++ = '/';
+		strcpy(topic, data->value);
+		mqtt_pub_clean_topic(topic);
+		topic += strlen(data->value);
+
+	} else if (data->type == DATA_INT) {
+		*topic++ = '/';
+		topic += sprintf(topic, "%d", *(int *)data->value);
+
+	} else {
+		fprintf(stderr, "Can't append data type %d to topic\n", data->type);
+	}
+
+	return topic;
+}
+
+static void print_mqtt_data(data_printer_context_t *printer_ctx, data_t *data, char *format, FILE *file)
+{
+	mqtt_pub_t *mqtt = printer_ctx->aux;
+
+	char *orig = mqtt->topic + strlen(mqtt->topic); // save current topic
+
+	// collect top level keys
+	data_t *data_type = NULL;
+	data_t *data_brand = NULL;
+	data_t *data_model = NULL;
+	data_t *data_channel = NULL;
+	data_t *data_id = NULL;
+	for (data_t *d = data; d; d = d->next) {
+		if (!strcmp(d->key, "type")) data_type = d;
+		else if (!strcmp(d->key, "brand")) data_brand = d;
+		else if (!strcmp(d->key, "model")) data_model = d;
+		else if (!strcmp(d->key, "channel")) data_channel = d;
+		else if (!strcmp(d->key, "id")) data_id = d;
+	}
+
+	char *end = orig;
+
+	// create topic
+	if (data_type) end = append_topic(end, data_type);
+	if (data_brand) end = append_topic(end, data_brand);
+	if (data_model) end = append_topic(end, data_model);
+	if (data_channel) end = append_topic(end, data_channel);
+	else if (data_id) end = append_topic(end, data_id);
+
+	while (data) {
+		if (!strcmp(data->key, "time")
+				|| !strcmp(data->key, "type")
+				|| !strcmp(data->key, "brand")
+				|| !strcmp(data->key, "model")
+				|| !strcmp(data->key, "channel")) {
+			// skip, except "id"
+
+		} else {
+			// push topic
+			*end = '/';
+			strcpy(end + 1, data->key);
+			print_value(printer_ctx, file, data->type, data->value, data->format);
+			*end = '\0'; // pop topic
+		}
+		data = data->next;
+	}
+    *orig = '\0'; // restore topic
+}
+
+static void print_mqtt_string(data_printer_context_t *printer_ctx, const char *str, char *format, FILE *file)
+{
+    mqtt_pub_publish((mqtt_pub_t *)printer_ctx->aux, str);
+}
+
+static void print_mqtt_double(data_printer_context_t *printer_ctx, double data, char *format, FILE *file)
+{
+	char str[20];
+	int ret = snprintf(str, 20, "%f", data);
+	print_mqtt_string(printer_ctx, str, format, file);
+}
+
+static void print_mqtt_int(data_printer_context_t *printer_ctx, int data, char *format, FILE *file)
+{
+	char str[20];
+	int ret = snprintf(str, 20, "%d", data);
+	print_mqtt_string(printer_ctx, str, format, file);
+}
+
+void *data_mqtt_init(const char *host, int port)
+{
+    return mqtt_pub_init(host, port);
+}
+
+void data_mqtt_free(void *aux)
+{
+    mqtt_pub_free((mqtt_pub_t *)aux);
 }
 
 /* Key-Value printer */

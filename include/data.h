@@ -50,6 +50,7 @@ typedef struct data {
 
 struct data_printer;
 extern struct data_printer data_json_printer;
+extern struct data_printer data_mqtt_printer;
 extern struct data_printer data_kv_printer;
 extern struct data_printer data_csv_printer;
 
@@ -103,6 +104,12 @@ void data_print(data_t *data, FILE* file, struct data_printer *printer, void *au
 
 /** Releases a structure object */
 void data_free(data_t *data);
+
+/** Construct auxiliary data for MQTT socket */
+void *data_mqtt_init(const char *host, int port);
+
+/** Destructs auxiliary MQTT data. */
+void data_mqtt_free(void *mqtt);
 
 /** Construct auxiliary data for CSV construction
 

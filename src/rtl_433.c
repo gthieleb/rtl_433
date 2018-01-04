@@ -883,6 +883,40 @@ void add_json_output(char *param)
     next_output_handler = &output->next;
 }
 
+void add_mqtt_output(char *param)
+{
+    char *mqtt_host = "localhost";
+    int mqtt_port = 1883;
+
+    if (param && *param) {
+        // e.g. "127.0.0.1:1883"
+        mqtt_host = param;
+        char *n = strchr(mqtt_host, ':');
+        if (n) {
+            *n++ = '\0';
+            mqtt_port = atoi(n);
+        }
+    }
+
+    fprintf(stderr, "MQTT output to: %s:%d\n", mqtt_host, mqtt_port);
+
+    void *aux_data = data_mqtt_init(mqtt_host, mqtt_port);
+    if (!aux_data) {
+        fprintf(stderr, "rtl_433: failed to allocate memory for MQTT auxiliary data\n");
+        exit(1);
+    }
+    output_handler_t *output = calloc(1, sizeof(output_handler_t));
+    if (!output) {
+        fprintf(stderr, "rtl_433: failed to allocate memory for output handler\n");
+        exit(1);
+    }
+    output->printer = &data_mqtt_printer;
+    output->aux_free = &data_mqtt_free;
+    output->aux = aux_data;
+    *next_output_handler = output;
+    next_output_handler = &output->next;
+}
+
 void add_csv_output(char *param, void *aux_data)
 {
     if (!aux_data) {
@@ -1052,6 +1086,8 @@ int main(int argc, char **argv) {
                     add_csv_output(arg_param(optarg), determine_csv_fields(devices, num_r_devices));
                 } else if (strncmp(optarg, "kv", 2) == 0) {
                     add_kv_output(arg_param(optarg));
+                } else if (strncmp(optarg, "mqtt", 4) == 0) {
+                    add_mqtt_output(arg_param(optarg));
                 } else {
                     fprintf(stderr, "Invalid output format %s\n", optarg);
                     usage(devices);
